@@ -1,0 +1,3 @@
+[submodule "pcb/ckcfp"]
+	path = pcb/ckcfp
+	url = https://github.com/camrbuss/ckcfp.git

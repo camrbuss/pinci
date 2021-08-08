@@ -1,0 +1,6 @@
+*.kicad_prl
+*.FCStd1
+*.bin
+*.zip
+pcb/fp-info-cache
+
