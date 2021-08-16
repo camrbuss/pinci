@@ -2,4 +2,5 @@
   (lib (name "connectors")(type "KiCad")(uri "${KIPRJMOD}/ckcfp/connectors.pretty")(options "")(descr ""))
   (lib (name "modules")(type "KiCad")(uri "${KIPRJMOD}/ckcfp/modules.pretty")(options "")(descr ""))
   (lib (name "switches")(type "KiCad")(uri "${KIPRJMOD}/ckcfp/switches.pretty")(options "")(descr ""))
+  (lib (name "mounting")(type "KiCad")(uri "${KIPRJMOD}/ckcfp/mounting.pretty")(options "")(descr ""))
 )
