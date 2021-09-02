@@ -95,10 +95,9 @@ fn main() -> ! {
     let mut led = pins.gpio25.into_push_pull_output();
     let mut ledo = pins.gpio18.into_push_pull_output();
 
-    let _: hal::gpio::Pin<_, hal::gpio::FunctionPio0> = pins.gpio0.into_mode();
     // TODO: make pin 8 and 9 a ps/2 interface
-    // let _: hal::gpio::Pin<_, hal::gpio::FunctionPio0> = pins.gpio8.into_mode();
-    // let _: hal::gpio::Pin<_, hal::gpio::FunctionPio0> = pins.gpio9.into_mode();
+    let _: hal::gpio::Pin<_, hal::gpio::FunctionPio0> = pins.gpio8.into_mode();
+    let _: hal::gpio::Pin<_, hal::gpio::FunctionPio0> = pins.gpio9.into_mode();
 
     let mut matrix: Matrix<DynPin, DynPin, 17, 1> = cortex_m::interrupt::free(move |_cs| {
         Matrix::new(
@@ -130,15 +129,17 @@ fn main() -> ! {
     let mut debouncer = Debouncer::new(PressedKeys::default(), PressedKeys::default(), 30);
     let mut chording = Chording::new(&[HK_TAB]);
 
-    // sideset is optional for each instruction, 1 pin is needed, pindirs is set to data
-    let side_set = pio::SideSet::new(true, 1, false);
+    // sideset is mandatory for each instruction, 1 pin is needed, pindirs is set to data
+    let side_set = pio::SideSet::new(false, 2, false);
     let mut a = pio::Assembler::new_with_side_set(side_set);
     let mut bit_loop = a.label();
-    a.pull_with_delay_and_side_set(false, true, 7, 1);
-    a.set_with_delay_and_side_set(SetDestination::X, 7, 7, 0);
+    a.set_with_side_set(SetDestination::PINS, 1, 0);
+    a.pull_with_side_set(false, true, 1);
+    a.set_with_side_set(SetDestination::PINS, 0, 0);
+    a.set_with_side_set(SetDestination::X, 8, 1);
     a.bind(&mut bit_loop);
-    a.out(pio::OutDestination::PINS, 1);
-    a.jmp_with_delay(pio::JmpCondition::XDecNonZero, &mut bit_loop, 6);
+    a.out_with_side_set(pio::OutDestination::PINS, 1, 0);
+    a.jmp_with_side_set(pio::JmpCondition::XDecNonZero, &mut bit_loop, 1);
 
     let program = a.assemble(None);
 
@@ -148,13 +149,14 @@ fn main() -> ! {
     hal::pio::PIOBuilder::default()
         .with_program(&program)
         .buffers(hal::pio::Buffers::OnlyTx)
-        .out_pins(0, 1)
+        .out_pins(8, 1)
+        .set_pins(8, 1)
         .side_set(side_set)
-        .side_set_pin_base(0)
+        .side_set_pin_base(9)
         .out_shift_direction(hal::pio::ShiftDirection::Right)
         .in_shift_direction(hal::pio::ShiftDirection::Right)
         .autopull(false)
-        .clock_divisor(135.0) // TODO: document magic number
+        .clock_divisor(5000.0) // TODO: document magic number
         .build(&pio, sm)
         .unwrap();
 
@@ -182,7 +184,7 @@ fn main() -> ! {
             for key in layout.keycodes() {
                 if key == keyberon::key_code::KeyCode::J {
                     // TODO: parse keycodes correctly
-                    sm.push(0b1100111);
+                    sm.push(0b110110001);
                     led.set_high().unwrap();
                     ledo.set_low().unwrap();
                 } else {
