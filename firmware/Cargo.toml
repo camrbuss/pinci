@@ -1,0 +1,18 @@
+[package]
+name = "pinci"
+version = "0.1.0"
+edition = "2018"
+
+[dependencies]
+cortex-m = "0.7"
+cortex-m-rt = { version = "0.6", features = ["device"] }
+cortex-m-rtic = { version = "0.5.8", default-features = false, features = ["cortex-m-7"] }
+embedded-hal = { version = "0.2", features=["unproven"] }
+panic-halt = "0.2"
+rp2040-boot2 = { git = "https://github.com/rp-rs/rp2040-boot2-rs", branch="main" }
+rp2040-pac = {version="0.1.4" , features=["rt"] }
+# rp2040-hal = { git = "https://github.com/rp-rs/rp-hal", branch="main" }
+rp2040-hal = { path = "./../../rp-hal/rp2040-hal"}
+pio = { git = "https://github.com/henkkuli/pio-rs.git", branch = "main" }
+
+keyberon = {path = "./../../keyberon"}

@@ -4,4 +4,5 @@
 *.zip
 pcb/fp-info-cache
 pcb/gerbers/*
+firmware/target/*
 
