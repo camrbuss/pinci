@@ -1,10 +1,12 @@
 [target.'cfg(all(target_arch = "arm", target_os = "none"))']
-runner = "gdb-multiarch -q -x openocd.gdb"
-# runner = "elf2uf2-rs -d"
+# runner = "gdb-multiarch -q -x openocd.gdb"
+runner = "elf2uf2-rs -d"
 
 rustflags = [
-  "-C", "link-arg=--nmagic",
-  "-C", "link-arg=-Tlink.x",
+    "-C", "link-arg=--nmagic",
+    "-C", "link-arg=-Tlink.x",
+    "-C", "inline-threshold=5",
+    "-C", "no-vectorize-loops",
 ]
 
 [build]

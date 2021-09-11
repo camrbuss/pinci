@@ -4,15 +4,19 @@ version = "0.1.0"
 edition = "2018"
 
 [dependencies]
-cortex-m = "0.7"
-cortex-m-rt = { version = "0.6", features = ["device"] }
-cortex-m-rtic = { version = "0.5.8", default-features = false, features = ["cortex-m-7"] }
-embedded-hal = { version = "0.2", features=["unproven"] }
-panic-halt = "0.2"
-rp2040-boot2 = { git = "https://github.com/rp-rs/rp2040-boot2-rs", branch="main" }
-rp2040-pac = {version="0.1.4" , features=["rt"] }
-# rp2040-hal = { git = "https://github.com/rp-rs/rp-hal", branch="main" }
-rp2040-hal = { path = "./../../rp-hal/rp2040-hal"}
-pio = { git = "https://github.com/henkkuli/pio-rs.git", branch = "main" }
-
+cortex-m = "0.7.2"
+rp2040-hal = { path = "../../rp-hal/rp2040-hal", version = "0.2.0"}
+cortex-m-rt = { version = "0.6.14", optional = true }
+embedded-time = "0.12.0"
+usb-device= "0.2.8"
+usbd-serial = "0.1.1"
+usbd-hid = "0.5.0"
 keyberon = {path = "./../../keyberon"}
+panic-halt= "0.2.0"
+embedded-hal ="0.2.5"
+rp2040-boot2 = "0.1.2"
+
+[features]
+default = ["rt"]
+rt = ["cortex-m-rt","rp2040-hal/rt"]
+
