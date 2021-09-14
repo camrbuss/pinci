@@ -5,8 +5,10 @@ edition = "2018"
 
 [dependencies]
 cortex-m = "0.7.2"
-rp2040-hal = { path = "../../rp-hal/rp2040-hal", version = "0.2.0"}
-cortex-m-rt = { version = "0.6.14", optional = true }
+rp2040-hal = { path = "../../rp-hal/rp2040-hal", version = "0.2.0", features = ["rt"]}
+rp2040-pac =  { path = "../../rp2040-pac", features = ["rt"]}
+cortex-m-rt = { version = "0.6.14", features = ["device"] }
+cortex-m-rtic = {git = "https://github.com/rtic-rs/cortex-m-rtic.git", rev="f46b22f797a728b0de1a6b14141c12ae1f016f8f"}
 embedded-time = "0.12.0"
 usb-device= "0.2.8"
 usbd-serial = "0.1.1"
@@ -15,8 +17,4 @@ keyberon = {path = "./../../keyberon"}
 panic-halt= "0.2.0"
 embedded-hal ="0.2.5"
 rp2040-boot2 = "0.1.2"
-
-[features]
-default = ["rt"]
-rt = ["cortex-m-rt","rp2040-hal/rt"]
 
