@@ -11,16 +11,12 @@ pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER;
 #[rtic::app(device = crate::hal::pac, peripherals = true, dispatchers = [PIO0_IRQ_0])]
 mod app {
 
-    use cortex_m::prelude::_embedded_hal_serial_Read;
-    use cortex_m::prelude::_embedded_hal_serial_Write;
     use embedded_hal::digital::v2::InputPin;
     use embedded_hal::digital::v2::OutputPin;
-    use embedded_hal::digital::v2::ToggleableOutputPin;
     use hal::clocks::init_clocks_and_plls;
     use hal::gpio::DynPin;
     use hal::pac;
     use hal::sio::Sio;
-    use hal::uart::UartPeripheral;
     use hal::usb::UsbBus;
     use hal::watchdog::Watchdog;
     use keyberon::action::{k, l, Action, HoldTapConfig};
@@ -133,7 +129,7 @@ mod app {
 
     #[rustfmt::skip]
 pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::layout! {
-{[ // 0
+    {[ // 0
         Q W E R T Y U I O P
         {A_LSHIFT} {L5_S} {D_LALT} {L2_F} G H J K L {SEMI_RSHIFT}
         {Z_LCTRL} {X_LALT} {L4_C} V B N M {L4_COMMA} {DOT_RALT} {SLASH_RCTRL}
@@ -177,7 +173,7 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
     ]}
     {[ // 7
         t t t t t t t t t PScreen
-        Tab Escape t t t MediaNextSong MediaPlayPause MediaVolDown MediaVolUp Enter
+        t Enter Tab Escape t MediaNextSong MediaPlayPause MediaVolDown MediaVolUp Enter
         t t t t t t t t t Delete
         t t t Delete t t t t t t
     ]}
@@ -192,7 +188,7 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
             rp2040_hal::usb::UsbBus,
             keyberon::keyboard::Keyboard<()>,
         >,
-        uart: rp2040_hal::uart::UartPeripheral<rp2040_hal::uart::Enabled, rp2040_hal::pac::UART0>,
+        uart: rp2040_hal::pac::UART0,
         scan_timer: pac::TIMER,
         #[lock_free]
         matrix: Matrix<DynPin, DynPin, 17, 1>,
@@ -201,7 +197,6 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
         debouncer: Debouncer<PressedKeys<17, 1>>,
         transform: fn(layout::Event) -> layout::Event,
         is_right: bool,
-        led1: hal::gpio::Pin<hal::gpio::pin::bank0::Gpio18, hal::gpio::PushPullOutput>,
     }
 
     #[local]
@@ -209,7 +204,6 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
 
     #[init]
     fn init(c: init::Context) -> (Shared, Local, init::Monotonics) {
-        // fn init(mut c: init::Context) -> init::LateResources {
         let mut resets = c.device.RESETS;
         let mut watchdog = Watchdog::new(c.device.WATCHDOG);
         let clocks = init_clocks_and_plls(
@@ -253,7 +247,6 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
         let gpio20 = pins.gpio20;
 
         let mut led = pins.gpio25.into_push_pull_output();
-        let mut led1 = pins.gpio18.into_push_pull_output();
         // GPIO1 is high for the right hand side
         let side = pins.gpio1.into_floating_input();
         // delay for power on
@@ -278,13 +271,15 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
             }
         };
 
-        let mut uart = UartPeripheral::<_, _>::enable(
-            c.device.UART0,
-            &mut resets,
-            hal::uart::common_configs::_115200_8_N_1,
-            clocks.peripheral_clock.into(),
-        )
-        .unwrap();
+        // Enable UART0
+        resets.reset.modify(|_, w| w.uart0().clear_bit());
+        while resets.reset_done.read().uart0().bit_is_clear() {}
+        let uart = c.device.UART0;
+        uart.uartibrd.write(|w| unsafe { w.bits(0b0100_0011) });
+        uart.uartfbrd.write(|w| unsafe { w.bits(0b0011_0100) });
+        uart.uartlcr_h.write(|w| unsafe { w.bits(0b0110_0000) });
+        uart.uartcr.write(|w| unsafe { w.bits(0b11_0000_0001) });
+        uart.uartimsc.write(|w| w.rxim().set_bit());
 
         let matrix: Matrix<DynPin, DynPin, 17, 1> = cortex_m::interrupt::free(move |_cs| {
             Matrix::new(
@@ -355,7 +350,6 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
                 debouncer,
                 transform,
                 is_right,
-                led1,
             },
             Local {},
             init::Monotonics(),
@@ -375,12 +369,11 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
         });
     }
 
-    #[task(priority = 2, capacity = 8, shared = [usb_dev, usb_class, layout, led1])]
+    #[task(priority = 2, capacity = 8, shared = [usb_dev, usb_class, layout])]
     fn handle_event(mut c: handle_event::Context, event: Option<layout::Event>) {
         match event {
             None => c.shared.layout.lock(|l| l.tick()),
             Some(e) => {
-                c.shared.led1.lock(|l| l.toggle().unwrap());
                 c.shared.layout.lock(|l| l.event(e));
                 return;
             }
@@ -402,7 +395,7 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
     #[task(
         binds = TIMER_IRQ_0,
         priority = 1,
-        shared = [uart, matrix, debouncer, scan_timer, &transform, &is_right, led1],
+        shared = [uart, matrix, debouncer, scan_timer, &transform, &is_right],
     )]
     fn scan_timer_irq(mut c: scan_timer_irq::Context) {
         let mut timer = c.shared.scan_timer;
@@ -436,16 +429,20 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
             for i in 0..(stop_index + 1) {
                 let mut byte: u8;
                 if let Some(ev) = es[i] {
-                    if ev.coord().1 <= 0b00111111 {
+                    if ev.coord().1 <= 0b0011_1111 {
                         byte = ev.coord().1;
                     } else {
-                        byte = 0b00111111;
+                        byte = 0b0011_1111;
                     }
                     byte |= (ev.is_press() as u8) << 6;
                     if i == stop_index + 1 {
-                        byte |= 0b10000000;
+                        byte |= 0b1000_0000;
                     }
-                    c.shared.uart.lock(|u| u.write(byte).unwrap());
+                    // TODO: this could block forever, implement watchdog
+                    while c.shared.uart.lock(|u| u.uartfr.read().txff().bit_is_set()) {}
+                    c.shared
+                        .uart
+                        .lock(|u| u.uartdr.write(|w| unsafe { w.data().bits(byte) }));
                 }
             }
         }
@@ -453,11 +450,19 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
 
     #[task(binds = UART0_IRQ, priority = 4, shared = [uart])]
     fn rx(mut c: rx::Context) {
-        if let Ok(r) = c.shared.uart.lock(|u| u.read()) {
-            if (r & 0b01000000) > 0 {
-                handle_event::spawn(Some(layout::Event::Press(0, r & 0b00111111))).unwrap();
+        if c.shared.uart.lock(|u| {
+            u.uartmis.read().rxmis().bit_is_set()
+                && u.uartfr.read().rxfe().bit_is_clear()
+                && u.uartdr.read().oe().bit_is_clear()
+                && u.uartdr.read().be().bit_is_clear()
+                && u.uartdr.read().pe().bit_is_clear()
+                && u.uartdr.read().fe().bit_is_clear()
+        }) {
+            let d: u8 = c.shared.uart.lock(|u| u.uartdr.read().data().bits());
+            if (d & 0b01000000) > 0 {
+                handle_event::spawn(Some(layout::Event::Press(0, d & 0b0011_1111))).unwrap();
             } else {
-                handle_event::spawn(Some(layout::Event::Release(0, r & 0b00111111))).unwrap();
+                handle_event::spawn(Some(layout::Event::Release(0, d & 0b0011_1111))).unwrap();
             }
         }
     }
