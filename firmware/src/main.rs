@@ -11,8 +11,11 @@ pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER;
 #[rtic::app(device = crate::hal::pac, peripherals = true, dispatchers = [PIO0_IRQ_0])]
 mod app {
 
+    use cortex_m::prelude::_embedded_hal_watchdog_Watchdog;
+    use cortex_m::prelude::_embedded_hal_watchdog_WatchdogEnable;
     use embedded_hal::digital::v2::InputPin;
     use embedded_hal::digital::v2::OutputPin;
+    use embedded_time::duration::units::*;
     use hal::clocks::init_clocks_and_plls;
     use hal::gpio::DynPin;
     use hal::pac;
@@ -35,12 +38,12 @@ mod app {
 
     #[derive(Debug, Clone, Copy, Eq, PartialEq)]
     pub enum CustomActions {
-        Dfu,
+        Uf2,
         Reset,
     }
     // TODO: implement uf2 and reset
-    // const DFU: Action<CustomActions> = Custom(CustomActions::Dfu);
-    // const RESET: Action<CustomActions> = Custom(CustomActions::Reset);
+    const UF2: Action<CustomActions> = Action::Custom(CustomActions::Uf2);
+    const RESET: Action<CustomActions> = Action::Custom(CustomActions::Reset);
 
     const A_LSHIFT: Action<CustomActions> = Action::HoldTap {
         timeout: 200,
@@ -166,16 +169,16 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
         t t t t t t t t t t
     ]}
     {[ // 6
-        t t t t t t t t t MediaSleep
+        {UF2} {RESET} t t t t t t t MediaSleep
         t t t t t t t t t t
         t t t t t t t t t t
         t t t t t t t t t t
     ]}
     {[ // 7
-        t t t t t t t t t PScreen
-        t Enter Tab Escape t MediaNextSong MediaPlayPause MediaVolDown MediaVolUp Enter
+        t t t t t MediaNextSong MediaPlayPause MediaVolDown MediaVolUp PScreen
+        t Enter Tab Escape t t Escape Tab Enter Enter
         t t t t t t t t t Delete
-        t t t Delete t t t t t t
+        t t t t Delete t t t t t
     ]}
 
 };
@@ -190,6 +193,8 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
         >,
         uart: rp2040_hal::pac::UART0,
         scan_timer: pac::TIMER,
+        #[lock_free]
+        watchdog: hal::watchdog::Watchdog,
         #[lock_free]
         matrix: Matrix<DynPin, DynPin, 17, 1>,
         layout: Layout<CustomActions>,
@@ -226,6 +231,8 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
             &mut resets,
         );
 
+        // 17 input pins and 1 empty pin that is not really used, but
+        // is needed by keyberon as a "row"
         let gpio2 = pins.gpio2;
         let gpio28 = pins.gpio28;
         let gpio3 = pins.gpio3;
@@ -253,6 +260,8 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
         for _ in 0..1000 {
             cortex_m::asm::nop();
         }
+
+        // Use a transform to get correct layout from right and left side
         let is_right = side.is_high().unwrap();
         let transform: fn(layout::Event) -> layout::Event = if is_right {
             |e| {
@@ -309,8 +318,9 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
 
         let layout = Layout::new(LAYERS);
         let debouncer: keyberon::debounce::Debouncer<keyberon::matrix::PressedKeys<17, 1>> =
-            Debouncer::new(PressedKeys::default(), PressedKeys::default(), 30);
+            Debouncer::new(PressedKeys::default(), PressedKeys::default(), 20);
 
+        // TODO: use rp hal abstraction instead of register level alarm
         let timer = c.device.TIMER;
         timer.dbgpause.write(|w| w.dbg0().set_bit());
         let current_time = timer.timelr.read().bits();
@@ -319,6 +329,7 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
             .write(|w| unsafe { w.bits(current_time + SCAN_TIME_US) });
         timer.inte.write(|w| w.alarm_0().set_bit());
 
+        // TRS cable only supports one direction of communication
         if is_right {
             let _rx_pin = pins.gpio17.into_mode::<hal::gpio::FunctionUart>();
             led.set_high().unwrap();
@@ -339,12 +350,16 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
         let usb_class = keyberon::new_class(unsafe { USB_BUS.as_ref().unwrap() }, ());
         let usb_dev = keyberon::new_device(unsafe { USB_BUS.as_ref().unwrap() });
 
+        // Start watchdog and feed it with the lowest priority task at 1000hz
+        watchdog.start(10_000.microseconds());
+
         (
             Shared {
                 usb_dev,
                 usb_class,
                 uart,
                 scan_timer: timer,
+                watchdog,
                 matrix,
                 layout,
                 debouncer,
@@ -372,7 +387,20 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
     #[task(priority = 2, capacity = 8, shared = [usb_dev, usb_class, layout])]
     fn handle_event(mut c: handle_event::Context, event: Option<layout::Event>) {
         match event {
-            None => c.shared.layout.lock(|l| l.tick()),
+            // TODO: Support Uf2 for the side not performing USB HID
+            // The right side only passes None here and buffers the keys
+            // for USB to send out when polled by the host
+            None => match c.shared.layout.lock(|l| l.tick()) {
+                layout::CustomEvent::Press(event) => match event {
+                    CustomActions::Uf2 => {
+                        hal::rom_data::reset_to_usb_boot(0, 0);
+                    }
+                    CustomActions::Reset => {
+                        cortex_m::peripheral::SCB::sys_reset();
+                    }
+                },
+                _ => (),
+            },
             Some(e) => {
                 c.shared.layout.lock(|l| l.event(e));
                 return;
@@ -395,7 +423,7 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
     #[task(
         binds = TIMER_IRQ_0,
         priority = 1,
-        shared = [uart, matrix, debouncer, scan_timer, &transform, &is_right],
+        shared = [uart, matrix, debouncer, watchdog, scan_timer, &transform, &is_right],
     )]
     fn scan_timer_irq(mut c: scan_timer_irq::Context) {
         let mut timer = c.shared.scan_timer;
@@ -405,6 +433,7 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
                 .write(|w| unsafe { w.bits(current_time + SCAN_TIME_US) })
         });
         timer.lock(|t| t.intr.write(|w| w.alarm_0().set_bit()));
+        c.shared.watchdog.feed();
         let keys_pressed = c.shared.matrix.get().unwrap();
         let events = c
             .shared
@@ -412,13 +441,17 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
             .events(keys_pressed)
             .map(c.shared.transform);
 
+        // TODO: With a TRS cable, we only can have one device support USB
         if *c.shared.is_right {
             for event in events {
                 handle_event::spawn(Some(event)).unwrap();
             }
             handle_event::spawn(None).unwrap();
         } else {
-            // coordinate cannot go past 63
+            // coordinate and press/release is encoded in a single byte
+            // the first 6 bits are the coordinate and therefore cannot go past 63
+            // The last bit is to signify if it is the last byte to be sent, but
+            // this is not currently used as serial rx is the highest priority
             // end? press=1/release=0 key_number
             //   7         6            543210
             let mut es: [Option<layout::Event>; 16] = [None; 16];
@@ -438,7 +471,7 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
                     if i == stop_index + 1 {
                         byte |= 0b1000_0000;
                     }
-                    // TODO: this could block forever, implement watchdog
+                    // Watchdog will catch any possibility for an infinite loop
                     while c.shared.uart.lock(|u| u.uartfr.read().txff().bit_is_set()) {}
                     c.shared
                         .uart
@@ -450,6 +483,9 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
 
     #[task(binds = UART0_IRQ, priority = 4, shared = [uart])]
     fn rx(mut c: rx::Context) {
+        // RX FIFO is disabled so we just check that the byte received is valid
+        // and then we read it. If a bad byte is received, it is possible that the
+        // receiving side will never read. TODO: fix this
         if c.shared.uart.lock(|u| {
             u.uartmis.read().rxmis().bit_is_set()
                 && u.uartfr.read().rxfe().bit_is_clear()
