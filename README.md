@@ -4,6 +4,7 @@
 
 This project is still under development, submit an issue if you have questions.
 
+![](./doc/pinci0.jpg)
 ![](./doc/blank_and_populated.jpg)
 
 <p float="left">
