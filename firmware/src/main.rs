@@ -23,6 +23,8 @@ mod app {
     use hal::usb::UsbBus;
     use hal::watchdog::Watchdog;
     use keyberon::action::{k, l, Action, HoldTapConfig};
+    use keyberon::chording::ChordDef;
+    use keyberon::chording::Chording;
     use keyberon::debounce::Debouncer;
     use keyberon::key_code;
     use keyberon::key_code::KeyCode::*;
@@ -41,9 +43,14 @@ mod app {
         Uf2,
         Reset,
     }
-    // TODO: implement uf2 and reset
     const UF2: Action<CustomActions> = Action::Custom(CustomActions::Uf2);
     const RESET: Action<CustomActions> = Action::Custom(CustomActions::Reset);
+
+    const QW_ESC: ChordDef = ChordDef::new((0, 37), &[(0, 0), (0, 1)]);
+    const JU_ESC: ChordDef = ChordDef::new((0, 37), &[(0, 16), (0, 6)]);
+    const KI_TAB: ChordDef = ChordDef::new((0, 39), &[(0, 17), (0, 7)]);
+    const LO_ENTER: ChordDef = ChordDef::new((0, 38), &[(0, 18), (0, 8)]);
+    const CHORDS: [ChordDef; 4] = [QW_ESC, JU_ESC, KI_TAB, LO_ENTER];
 
     const A_LSHIFT: Action<CustomActions> = Action::HoldTap {
         timeout: 200,
@@ -136,7 +143,7 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
         Q W E R T Y U I O P
         {A_LSHIFT} {L5_S} {D_LALT} {L2_F} G H J K L {SEMI_RSHIFT}
         {Z_LCTRL} {X_LALT} {L4_C} V B N M {L4_COMMA} {DOT_RALT} {SLASH_RCTRL}
-        t t t (3) BSpace  {L7_SPACE} Tab Escape Enter Tab 
+        t t t (3) BSpace {L7_SPACE} Tab Escape Enter Tab 
     ]}
     {[ // 1
         t t t t t t t t t t
@@ -195,6 +202,8 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
         scan_timer: pac::TIMER,
         #[lock_free]
         watchdog: hal::watchdog::Watchdog,
+        #[lock_free]
+        chording: Chording,
         #[lock_free]
         matrix: Matrix<DynPin, DynPin, 17, 1>,
         layout: Layout<CustomActions>,
@@ -318,7 +327,9 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
 
         let layout = Layout::new(LAYERS);
         let debouncer: keyberon::debounce::Debouncer<keyberon::matrix::PressedKeys<17, 1>> =
-            Debouncer::new(PressedKeys::default(), PressedKeys::default(), 20);
+            Debouncer::new(PressedKeys::default(), PressedKeys::default(), 30);
+
+        let chording = Chording::new(&CHORDS);
 
         // TODO: use rp hal abstraction instead of register level alarm
         let timer = c.device.TIMER;
@@ -359,6 +370,7 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
                 usb_class,
                 uart,
                 scan_timer: timer,
+                chording,
                 watchdog,
                 matrix,
                 layout,
@@ -423,7 +435,7 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
     #[task(
         binds = TIMER_IRQ_0,
         priority = 1,
-        shared = [uart, matrix, debouncer, watchdog, scan_timer, &transform, &is_right],
+        shared = [uart, matrix, debouncer, chording, watchdog, scan_timer, &transform, &is_right],
     )]
     fn scan_timer_irq(mut c: scan_timer_irq::Context) {
         let mut timer = c.shared.scan_timer;
@@ -435,11 +447,13 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
         timer.lock(|t| t.intr.write(|w| w.alarm_0().set_bit()));
         c.shared.watchdog.feed();
         let keys_pressed = c.shared.matrix.get().unwrap();
-        let events = c
+        let deb_events = c
             .shared
             .debouncer
             .events(keys_pressed)
             .map(c.shared.transform);
+        // TODO: right now chords cannot only be exclusively on one side
+        let events = c.shared.chording.tick(deb_events.collect()).into_iter();
 
         // TODO: With a TRS cable, we only can have one device support USB
         if *c.shared.is_right {
