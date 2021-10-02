@@ -16,12 +16,21 @@ This project is still under development, submit an issue if you have questions.
 
 - 34 key layout with two thumb keys skewed outward
 - [Kailh PG1232](https://www.kailhswitch.com/news/pg1232-keyboard-switch-brief-introduction-21834938.html) Low Profile Switches
-- [Raspbery Pi Pico](https://www.raspberrypi.org/products/raspberry-pi-pico/) (RP2040)
+- [Raspberry Pi Pico](https://www.raspberrypi.org/products/raspberry-pi-pico/) (RP2040)
 - Reversible PCB
 - TRS capable hardware (normal headphone cable)
 - Minimal SMD components and no THT components
 - No diodes, just direct switch to gpio connections
 - Useable with and without a case
+
+### BOM
+
+| Part | Qty | Manufacturer Part No |
+| ---- | --- | -------------------- |
+| Kailh Swithces | 34 | PG1232 |
+| Raspberry Pi Pico | 2 | SC0915 |
+| 1206 5% 10k Ohm Resistor | 2 | N/A |
+| 3.5mm Headphone Jack | 2 | 54-00177 |
 
 ## Firmware
 
