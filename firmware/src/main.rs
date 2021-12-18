@@ -6,7 +6,7 @@ use rp2040_hal as hal;
 
 #[link_section = ".boot2"]
 #[used]
-pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER;
+pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 
 #[rtic::app(device = crate::hal::pac, peripherals = true, dispatchers = [PIO0_IRQ_0])]
 mod app {
@@ -46,10 +46,10 @@ mod app {
     const UF2: Action<CustomActions> = Action::Custom(CustomActions::Uf2);
     const RESET: Action<CustomActions> = Action::Custom(CustomActions::Reset);
 
-    const QW_ESC: ChordDef = ChordDef::new((0, 37), &[(0, 0), (0, 1)]);
-    const JU_ESC: ChordDef = ChordDef::new((0, 37), &[(0, 16), (0, 6)]);
-    const KI_TAB: ChordDef = ChordDef::new((0, 39), &[(0, 17), (0, 7)]);
-    const LO_ENTER: ChordDef = ChordDef::new((0, 38), &[(0, 18), (0, 8)]);
+    const QW_ESC: ChordDef = ((0, 37), &[(0, 0), (0, 1)]);
+    const JU_ESC: ChordDef = ((0, 37), &[(0, 16), (0, 6)]);
+    const KI_TAB: ChordDef = ((0, 39), &[(0, 17), (0, 7)]);
+    const LO_ENTER: ChordDef = ((0, 38), &[(0, 18), (0, 8)]);
     const CHORDS: [ChordDef; 4] = [QW_ESC, JU_ESC, KI_TAB, LO_ENTER];
 
     const A_LSHIFT: Action<CustomActions> = Action::HoldTap {
@@ -143,7 +143,7 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
         Q W E R T Y U I O P
         {A_LSHIFT} {L5_S} {D_LALT} {L2_F} G H J K L {SEMI_RSHIFT}
         {Z_LCTRL} {X_LALT} {L4_C} V B N M {L4_COMMA} {DOT_RALT} {SLASH_RCTRL}
-        t t t (3) BSpace {L7_SPACE} Tab Escape Enter Tab 
+        t t t (3) BSpace {L7_SPACE} Tab Escape Enter Tab
     ]}
     {[ // 1
         t t t t t t t t t t
@@ -203,7 +203,7 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
         #[lock_free]
         watchdog: hal::watchdog::Watchdog,
         #[lock_free]
-        chording: Chording,
+        chording: Chording<4>,
         #[lock_free]
         matrix: Matrix<DynPin, DynPin, 17, 1>,
         layout: Layout<CustomActions>,
