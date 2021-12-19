@@ -18,7 +18,6 @@ mod app {
     use embedded_time::duration::units::*;
     use hal::clocks::init_clocks_and_plls;
     use hal::gpio::DynPin;
-    use hal::pac;
     use hal::sio::Sio;
     use hal::usb::UsbBus;
     use hal::watchdog::Watchdog;
@@ -138,12 +137,12 @@ mod app {
     };
 
     #[rustfmt::skip]
-pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::layout! {
+    pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::layout! {
     {[ // 0
-        Q W E R T Y U I O P
-        {A_LSHIFT} {L5_S} {D_LALT} {L2_F} G H J K L {SEMI_RSHIFT}
-        {Z_LCTRL} {X_LALT} {L4_C} V B N M {L4_COMMA} {DOT_RALT} {SLASH_RCTRL}
-        t t t (3) BSpace {L7_SPACE} Tab Escape Enter Tab
+        Q          W        E        R      T      Y          U   I          O          P
+        {A_LSHIFT} {L5_S}   {D_LALT} {L2_F} G      H          J   K          L          {SEMI_RSHIFT}
+        {Z_LCTRL}  {X_LALT} {L4_C}   V      B      N          M   {L4_COMMA} {DOT_RALT} {SLASH_RCTRL}
+        t          t        t        (3)    BSpace {L7_SPACE} Tab Escape     Enter      Tab
     ]}
     {[ // 1
         t t t t t t t t t t
@@ -164,28 +163,28 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
         t t t t t t t t t t
     ]}
     {[ // 4
-        ! @ # $ % t '_' | = +
-        '{' '}' '(' ')' t '`' ~ / '"' Quote
-        '[' ']' ^ & * t - '\\' t t
-        t t t t t t t t t t
+        !   @   #   $   % t   '_' |    =   +
+        '{' '}' '(' ')' t '`' ~   /    '"' Quote
+        '[' ']' ^   &   * t   -   '\\' t   t
+        t   t   t   t   t t   t   t    t   t
     ]}
     {[ // 5
-        t t t t t t t PgUp t t
-        t t Delete t t Left Down Up Right Enter
-        t t t t t t Home PgDown End t
-        t t t t t t t t t t
+        t t t      t t t    t    PgUp   t     t
+        t t Delete t t Left Down Up     Right Enter
+        t t t      t t t    Home PgDown End   t
+        t t t      t t t    t    t      t     t
     ]}
     {[ // 6
         {UF2} {RESET} t t t t t t t MediaSleep
-        t t t t t t t t t t
-        t t t t t t t t t t
-        t t t t t t t t t t
+        t     t       t t t t t t t t
+        t     t       t t t t t t t t
+        t     t       t t t t t t t t
     ]}
     {[ // 7
-        t t t t t MediaNextSong MediaPlayPause MediaVolDown MediaVolUp PScreen
-        t Enter Tab Escape t t Escape Tab Enter Enter
-        t t t t t t t t t Delete
-        t t t t Delete t t t t t
+        t t     t   t      t      MediaNextSong MediaPlayPause MediaVolDown MediaVolUp PScreen
+        t Enter Tab Escape t      t             Escape         Tab          Enter      Enter
+        t t     t   t      t      t             t              t            t          Delete
+        t t     t   t      Delete t             t              t            t          t
     ]}
 
 };
@@ -199,7 +198,8 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
             keyberon::keyboard::Keyboard<()>,
         >,
         uart: rp2040_hal::pac::UART0,
-        scan_timer: pac::TIMER,
+        timer: hal::timer::Timer,
+        alarm: hal::timer::Alarm0,
         #[lock_free]
         watchdog: hal::watchdog::Watchdog,
         #[lock_free]
@@ -331,14 +331,10 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
 
         let chording = Chording::new(&CHORDS);
 
-        // TODO: use rp hal abstraction instead of register level alarm
-        let timer = c.device.TIMER;
-        timer.dbgpause.write(|w| w.dbg0().set_bit());
-        let current_time = timer.timelr.read().bits();
-        timer
-            .alarm0
-            .write(|w| unsafe { w.bits(current_time + SCAN_TIME_US) });
-        timer.inte.write(|w| w.alarm_0().set_bit());
+        let mut timer = hal::Timer::new(c.device.TIMER, &mut resets);
+        let mut alarm = timer.alarm_0().unwrap();
+        let _ = alarm.schedule(SCAN_TIME_US.microseconds());
+        alarm.enable_interrupt(&mut timer);
 
         // TRS cable only supports one direction of communication
         if is_right {
@@ -369,7 +365,8 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
                 usb_dev,
                 usb_class,
                 uart,
-                scan_timer: timer,
+                timer,
+                alarm,
                 chording,
                 watchdog,
                 matrix,
@@ -435,16 +432,16 @@ pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::l
     #[task(
         binds = TIMER_IRQ_0,
         priority = 1,
-        shared = [uart, matrix, debouncer, chording, watchdog, scan_timer, &transform, &is_right],
+        shared = [uart, matrix, debouncer, chording, watchdog, timer, alarm, &transform, &is_right],
     )]
     fn scan_timer_irq(mut c: scan_timer_irq::Context) {
-        let mut timer = c.shared.scan_timer;
-        let current_time = timer.lock(|t| t.timerawl.read().bits());
-        timer.lock(|t| {
-            t.alarm0
-                .write(|w| unsafe { w.bits(current_time + SCAN_TIME_US) })
+        let timer = c.shared.timer;
+        let alarm = c.shared.alarm;
+        (timer, alarm).lock(|t, a| {
+            a.clear_interrupt(t);
+            let _ = a.schedule(SCAN_TIME_US.microseconds());
         });
-        timer.lock(|t| t.intr.write(|w| w.alarm_0().set_bit()));
+
         c.shared.watchdog.feed();
         let keys_pressed = c.shared.matrix.get().unwrap();
         let deb_events = c

@@ -6,14 +6,24 @@ edition = "2018"
 [dependencies]
 cortex-m = "0.7.2"
 cortex-m-rt = { version = "0.7", features = ["device"] }
-cortex-m-rtic = "0.6.0-rc.1"
+cortex-m-rtic = "0.6.0-rc.4"
 embedded-time = "0.12.0"
 usb-device= "0.2.8"
 usbd-serial = "0.1.1"
 usbd-hid = "0.5.0"
-keyberon = { git = "https://github.com/TeXitoi/keyberon" }
+keyberon = { git = "https://github.com/TeXitoi/keyberon", rev = "23deef5d6330c3167025a1f4aeccdc44e3d44ec1" }
 panic-halt= "0.2.0"
 embedded-hal ="0.2.5"
-rp2040-hal = { git = "https://github.com/rp-rs/rp-hal", rev = "77787e760d08a33b558879b239cd28e65c2e369d", features = ["rt"] }
+rp2040-hal = { git = "https://github.com/rp-rs/rp-hal", rev = "53d9dbdf524a63ae78d06fd93e25de73aa005015", features = ["rt"] }
 rp2040-boot2 = "0.2.0"
+
+[profile.dev]
+lto = true
+incremental = false
+opt-level = "z"
+debug = true
+
+[profile.release]
+lto = true
+incremental = false
 
