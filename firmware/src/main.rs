@@ -2,35 +2,26 @@
 #![no_main]
 
 use panic_halt as _;
-use rp2040_hal as hal;
 
-#[link_section = ".boot2"]
-#[used]
-pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
-
-#[rtic::app(device = crate::hal::pac, peripherals = true, dispatchers = [PIO0_IRQ_0])]
+#[rtic::app(device = rp_pico::hal::pac, peripherals = true, dispatchers = [PIO0_IRQ_0])]
 mod app {
-
     use cortex_m::prelude::_embedded_hal_watchdog_Watchdog;
     use cortex_m::prelude::_embedded_hal_watchdog_WatchdogEnable;
-    use embedded_hal::digital::v2::InputPin;
-    use embedded_hal::digital::v2::OutputPin;
+    use embedded_hal::digital::v2::{InputPin, OutputPin};
     use embedded_time::duration::units::*;
-    use hal::clocks::init_clocks_and_plls;
-    use hal::gpio::DynPin;
-    use hal::sio::Sio;
-    use hal::usb::UsbBus;
-    use hal::watchdog::Watchdog;
-    use keyberon::action::{k, l, Action, HoldTapConfig};
-    use keyberon::chording::ChordDef;
-    use keyberon::chording::Chording;
+    use keyberon::action::{k, l, Action, HoldTapAction, HoldTapConfig};
+    use keyberon::chording::{ChordDef, Chording};
     use keyberon::debounce::Debouncer;
-    use keyberon::key_code;
-    use keyberon::key_code::KeyCode::*;
-    use keyberon::layout;
-    use keyberon::layout::Layout;
-    use keyberon::matrix::{Matrix, PressedKeys};
-    use rp2040_hal as hal;
+    use keyberon::key_code::{self, KeyCode::*};
+    use keyberon::layout::{self, Layout};
+    use keyberon::matrix::Matrix;
+    use rp_pico::{
+        hal::{
+            self, clocks::init_clocks_and_plls, gpio::DynPin, sio::Sio, timer::Alarm, usb::UsbBus,
+            watchdog::Watchdog,
+        },
+        XOSC_CRYSTAL_FREQ,
+    };
     use usb_device::class_prelude::*;
     use usb_device::device::UsbDeviceState;
 
@@ -51,93 +42,93 @@ mod app {
     const LO_ENTER: ChordDef = ((0, 38), &[(0, 18), (0, 8)]);
     const CHORDS: [ChordDef; 4] = [QW_ESC, JU_ESC, KI_TAB, LO_ENTER];
 
-    const A_LSHIFT: Action<CustomActions> = Action::HoldTap {
+    const A_LSHIFT: Action<CustomActions> = Action::HoldTap(&HoldTapAction {
         timeout: 200,
-        hold: &k(LShift),
-        tap: &k(A),
+        hold: k(LShift),
+        tap: k(A),
         config: HoldTapConfig::PermissiveHold,
         tap_hold_interval: 0,
-    };
-    const L5_S: Action<CustomActions> = Action::HoldTap {
+    });
+    const L5_S: Action<CustomActions> = Action::HoldTap(&HoldTapAction {
         timeout: 200,
-        hold: &l(5),
-        tap: &k(S),
+        hold: l(5),
+        tap: k(S),
         config: HoldTapConfig::Default,
         tap_hold_interval: 0,
-    };
-    const D_LALT: Action<CustomActions> = Action::HoldTap {
+    });
+    const D_LALT: Action<CustomActions> = Action::HoldTap(&HoldTapAction {
         timeout: 200,
-        hold: &k(LAlt),
-        tap: &k(D),
+        hold: k(LAlt),
+        tap: k(D),
         config: HoldTapConfig::Default,
         tap_hold_interval: 0,
-    };
-    const L2_F: Action<CustomActions> = Action::HoldTap {
+    });
+    const L2_F: Action<CustomActions> = Action::HoldTap(&HoldTapAction {
         timeout: 200,
-        hold: &l(2),
-        tap: &k(F),
+        hold: l(2),
+        tap: k(F),
         config: HoldTapConfig::Default,
         tap_hold_interval: 0,
-    };
-    const DOT_RALT: Action<CustomActions> = Action::HoldTap {
+    });
+    const DOT_RALT: Action<CustomActions> = Action::HoldTap(&HoldTapAction {
         timeout: 200,
-        hold: &k(RAlt),
-        tap: &k(Dot),
+        hold: k(RAlt),
+        tap: k(Dot),
         config: HoldTapConfig::Default,
         tap_hold_interval: 0,
-    };
-    const X_LALT: Action<CustomActions> = Action::HoldTap {
+    });
+    const X_LALT: Action<CustomActions> = Action::HoldTap(&HoldTapAction {
         timeout: 200,
-        hold: &k(LAlt),
-        tap: &k(X),
+        hold: k(LAlt),
+        tap: k(X),
         config: HoldTapConfig::Default,
         tap_hold_interval: 0,
-    };
-    const SLASH_RCTRL: Action<CustomActions> = Action::HoldTap {
+    });
+    const SLASH_RCTRL: Action<CustomActions> = Action::HoldTap(&HoldTapAction {
         timeout: 200,
-        hold: &k(RCtrl),
-        tap: &k(Slash),
+        hold: k(RCtrl),
+        tap: k(Slash),
         config: HoldTapConfig::Default,
         tap_hold_interval: 0,
-    };
-    const Z_LCTRL: Action<CustomActions> = Action::HoldTap {
+    });
+    const Z_LCTRL: Action<CustomActions> = Action::HoldTap(&HoldTapAction {
         timeout: 200,
-        hold: &k(LCtrl),
-        tap: &k(Z),
+        hold: k(LCtrl),
+        tap: k(Z),
         config: HoldTapConfig::Default,
         tap_hold_interval: 0,
-    };
-    const L4_C: Action<CustomActions> = Action::HoldTap {
+    });
+    const L4_C: Action<CustomActions> = Action::HoldTap(&HoldTapAction {
         timeout: 200,
-        hold: &l(4),
-        tap: &k(C),
+        hold: l(4),
+        tap: k(C),
         config: HoldTapConfig::Default,
         tap_hold_interval: 0,
-    };
-    const SEMI_RSHIFT: Action<CustomActions> = Action::HoldTap {
+    });
+    const SEMI_RSHIFT: Action<CustomActions> = Action::HoldTap(&HoldTapAction {
         timeout: 200,
-        hold: &k(RShift),
-        tap: &k(SColon),
+        hold: k(RShift),
+        tap: k(SColon),
         config: HoldTapConfig::PermissiveHold,
         tap_hold_interval: 0,
-    };
-    const L7_SPACE: Action<CustomActions> = Action::HoldTap {
+    });
+    const L7_SPACE: Action<CustomActions> = Action::HoldTap(&HoldTapAction {
         timeout: 200,
-        hold: &l(7),
-        tap: &k(Space),
+        hold: l(7),
+        tap: k(Space),
         config: HoldTapConfig::Default,
         tap_hold_interval: 0,
-    };
-    const L4_COMMA: Action<CustomActions> = Action::HoldTap {
+    });
+    const L4_COMMA: Action<CustomActions> = Action::HoldTap(&HoldTapAction {
         timeout: 200,
-        hold: &l(4),
-        tap: &k(Comma),
+        hold: l(4),
+        tap: k(Comma),
         config: HoldTapConfig::Default,
         tap_hold_interval: 0,
-    };
+    });
 
     #[rustfmt::skip]
-    pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::layout! {
+    pub static LAYERS: keyberon::layout::Layers<40, 1, 8, CustomActions> = keyberon::layout::layout! {
     {[ // 0
         Q          W        E        R      T      Y          U   I          O          P
         {A_LSHIFT} {L5_S}   {D_LALT} {L2_F} G      H          J   K          L          {SEMI_RSHIFT}
@@ -163,10 +154,10 @@ mod app {
         t t t t t t t t t t
     ]}
     {[ // 4
-        !   @   #   $   % t   '_' |    =   +
-        '{' '}' '(' ')' t '`' ~   /    '"' Quote
-        '[' ']' ^   &   * t   -   '\\' t   t
-        t   t   t   t   t t   t   t    t   t
+        !   @   #   $   % t ~   |    '`' +
+        '{' '}' '(' ')' t = '_' -    '"' Quote
+        '[' ']' ^   &   * t /   '\\' t   t
+        t   t   t   t   t t t   t    t   t
     ]}
     {[ // 5
         t t t      t t t    t    PgUp   t     t
@@ -175,16 +166,16 @@ mod app {
         t t t      t t t    t    t      t     t
     ]}
     {[ // 6
-        {UF2} {RESET} t t t t t t t MediaSleep
-        t     t       t t t t t t t t
-        t     t       t t t t t t t t
-        t     t       t t t t t t t t
+        {RESET} {UF2} t t t t t t t MediaSleep
+        t       t     t t t t t t t t
+        t       t     t t t t t t t t
+        t       t     t t t t t t t t
     ]}
     {[ // 7
-        t t     t   t      t      MediaNextSong MediaPlayPause MediaVolDown MediaVolUp PScreen
-        t Enter Tab Escape t      t             Escape         Tab          Enter      Enter
-        t t     t   t      t      t             t              t            t          Delete
-        t t     t   t      Delete t             t              t            t          t
+        t t t t t      MediaNextSong MediaPlayPause MediaVolDown MediaVolUp PScreen
+        t t t t t      t             Escape         Tab          Enter      Enter
+        t t t t t      t             t              t            t          Delete
+        t t t t Delete t             t              t            t          t
     ]}
 
 };
@@ -198,30 +189,31 @@ mod app {
             keyberon::keyboard::Keyboard<()>,
         >,
         uart: rp2040_hal::pac::UART0,
-        timer: hal::timer::Timer,
-        alarm: hal::timer::Alarm0,
-        #[lock_free]
+        layout: Layout<40, 1, 8, CustomActions>,
+    }
+
+    #[local]
+    struct Local {
         watchdog: hal::watchdog::Watchdog,
-        #[lock_free]
         chording: Chording<4>,
-        #[lock_free]
         matrix: Matrix<DynPin, DynPin, 17, 1>,
-        layout: Layout<CustomActions>,
-        #[lock_free]
-        debouncer: Debouncer<PressedKeys<17, 1>>,
+        debouncer: Debouncer<[[bool; 17]; 1]>,
+        alarm: hal::timer::Alarm0,
         transform: fn(layout::Event) -> layout::Event,
         is_right: bool,
     }
 
-    #[local]
-    struct Local {}
-
     #[init]
     fn init(c: init::Context) -> (Shared, Local, init::Monotonics) {
+        // Soft-reset does not release the hardware spinlocks
+        // Release them now to avoid a deadlock after debug or watchdog reset
+        unsafe {
+            hal::sio::spinlock_reset();
+        }
         let mut resets = c.device.RESETS;
         let mut watchdog = Watchdog::new(c.device.WATCHDOG);
         let clocks = init_clocks_and_plls(
-            12_000_000u32,
+            XOSC_CRYSTAL_FREQ,
             c.device.XOSC,
             c.device.CLOCKS,
             c.device.PLL_SYS,
@@ -299,42 +291,39 @@ mod app {
         uart.uartcr.write(|w| unsafe { w.bits(0b11_0000_0001) });
         uart.uartimsc.write(|w| w.rxim().set_bit());
 
-        let matrix: Matrix<DynPin, DynPin, 17, 1> = cortex_m::interrupt::free(move |_cs| {
-            Matrix::new(
-                [
-                    gpio2.into_pull_up_input().into(),
-                    gpio28.into_pull_up_input().into(),
-                    gpio3.into_pull_up_input().into(),
-                    gpio27.into_pull_up_input().into(),
-                    gpio4.into_pull_up_input().into(),
-                    gpio5.into_pull_up_input().into(),
-                    gpio26.into_pull_up_input().into(),
-                    gpio6.into_pull_up_input().into(),
-                    gpio22.into_pull_up_input().into(),
-                    gpio7.into_pull_up_input().into(),
-                    gpio10.into_pull_up_input().into(),
-                    gpio11.into_pull_up_input().into(),
-                    gpio12.into_pull_up_input().into(),
-                    gpio21.into_pull_up_input().into(),
-                    gpio13.into_pull_up_input().into(),
-                    gpio15.into_pull_up_input().into(),
-                    gpio14.into_pull_up_input().into(),
-                ],
-                [gpio20.into_push_pull_output().into()],
-            )
-        })
+        let matrix: Matrix<DynPin, DynPin, 17, 1> = Matrix::new(
+            [
+                gpio2.into_pull_up_input().into(),
+                gpio28.into_pull_up_input().into(),
+                gpio3.into_pull_up_input().into(),
+                gpio27.into_pull_up_input().into(),
+                gpio4.into_pull_up_input().into(),
+                gpio5.into_pull_up_input().into(),
+                gpio26.into_pull_up_input().into(),
+                gpio6.into_pull_up_input().into(),
+                gpio22.into_pull_up_input().into(),
+                gpio7.into_pull_up_input().into(),
+                gpio10.into_pull_up_input().into(),
+                gpio11.into_pull_up_input().into(),
+                gpio12.into_pull_up_input().into(),
+                gpio21.into_pull_up_input().into(),
+                gpio13.into_pull_up_input().into(),
+                gpio15.into_pull_up_input().into(),
+                gpio14.into_pull_up_input().into(),
+            ],
+            [gpio20.into_push_pull_output().into()],
+        )
         .unwrap();
 
-        let layout = Layout::new(LAYERS);
-        let debouncer: keyberon::debounce::Debouncer<keyberon::matrix::PressedKeys<17, 1>> =
-            Debouncer::new(PressedKeys::default(), PressedKeys::default(), 30);
+        let layout = Layout::new(&LAYERS);
+        let debouncer = Debouncer::new([[false; 17]; 1], [[false; 17]; 1], 20);
 
         let chording = Chording::new(&CHORDS);
 
         let mut timer = hal::Timer::new(c.device.TIMER, &mut resets);
         let mut alarm = timer.alarm_0().unwrap();
         let _ = alarm.schedule(SCAN_TIME_US.microseconds());
-        alarm.enable_interrupt(&mut timer);
+        alarm.enable_interrupt();
 
         // TRS cable only supports one direction of communication
         if is_right {
@@ -365,17 +354,17 @@ mod app {
                 usb_dev,
                 usb_class,
                 uart,
-                timer,
+                layout,
+            },
+            Local {
                 alarm,
                 chording,
                 watchdog,
                 matrix,
-                layout,
                 debouncer,
                 transform,
                 is_right,
             },
-            Local {},
             init::Monotonics(),
         )
     }
@@ -432,28 +421,26 @@ mod app {
     #[task(
         binds = TIMER_IRQ_0,
         priority = 1,
-        shared = [uart, matrix, debouncer, chording, watchdog, timer, alarm, &transform, &is_right],
+        shared = [uart],
+        local = [matrix, debouncer, chording, watchdog, alarm, transform, is_right],
     )]
     fn scan_timer_irq(mut c: scan_timer_irq::Context) {
-        let timer = c.shared.timer;
-        let alarm = c.shared.alarm;
-        (timer, alarm).lock(|t, a| {
-            a.clear_interrupt(t);
-            let _ = a.schedule(SCAN_TIME_US.microseconds());
-        });
+        let alarm = c.local.alarm;
+        alarm.clear_interrupt();
+        let _ = alarm.schedule(SCAN_TIME_US.microseconds());
 
-        c.shared.watchdog.feed();
-        let keys_pressed = c.shared.matrix.get().unwrap();
+        c.local.watchdog.feed();
+        let keys_pressed = c.local.matrix.get().unwrap();
         let deb_events = c
-            .shared
+            .local
             .debouncer
             .events(keys_pressed)
-            .map(c.shared.transform);
+            .map(c.local.transform);
         // TODO: right now chords cannot only be exclusively on one side
-        let events = c.shared.chording.tick(deb_events.collect()).into_iter();
+        let events = c.local.chording.tick(deb_events.collect()).into_iter();
 
-        // TODO: With a TRS cable, we only can have one device support USB
-        if *c.shared.is_right {
+        // TODO: With a TRS cable, we can only have one device support USB
+        if *c.local.is_right {
             for event in events {
                 handle_event::spawn(Some(event)).unwrap();
             }
