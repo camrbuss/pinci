@@ -5,10 +5,11 @@ use panic_halt as _;
 
 #[rtic::app(device = rp_pico::hal::pac, peripherals = true, dispatchers = [PIO0_IRQ_0])]
 mod app {
+    use core::sync::atomic::{AtomicUsize, Ordering};
     use cortex_m::prelude::_embedded_hal_watchdog_Watchdog;
     use cortex_m::prelude::_embedded_hal_watchdog_WatchdogEnable;
-    use embedded_hal::digital::v2::{InputPin, OutputPin};
-    use embedded_time::duration::units::*;
+    use embedded_hal::digital::v2::{InputPin, OutputPin, ToggleableOutputPin};
+    use fugit::{MicrosDurationU32, RateExtU32};
     use keyberon::action::{k, l, Action, HoldTapAction, HoldTapConfig};
     use keyberon::chording::{ChordDef, Chording};
     use keyberon::debounce::Debouncer;
@@ -17,15 +18,28 @@ mod app {
     use keyberon::matrix::Matrix;
     use rp_pico::{
         hal::{
-            self, clocks::init_clocks_and_plls, gpio::DynPin, sio::Sio, timer::Alarm, usb::UsbBus,
+            self,
+            clocks::init_clocks_and_plls,
+            gpio::{pin::bank0, DynPin, Function, Pin, Uart},
+            pac::UART0,
+            sio::Sio,
+            timer::Alarm,
+            uart::{DataBits, Reader, StopBits, UartConfig, UartPeripheral, Writer},
+            usb::UsbBus,
             watchdog::Watchdog,
+            Clock,
         },
         XOSC_CRYSTAL_FREQ,
     };
+    use rtt_target::{rprintln, rtt_init_print};
     use usb_device::class_prelude::*;
     use usb_device::device::UsbDeviceState;
 
-    const SCAN_TIME_US: u32 = 1000;
+    const SCAN_INTERVAL: MicrosDurationU32 = MicrosDurationU32::millis(1000);
+    const WATCHDOG_INTERVAL: MicrosDurationU32 = MicrosDurationU32::millis(100000);
+
+    const COMS_NUM_BYTES: usize = 3;
+
     static mut USB_BUS: Option<usb_device::bus::UsbBusAllocator<rp2040_hal::usb::UsbBus>> = None;
 
     #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -188,19 +202,34 @@ mod app {
             rp2040_hal::usb::UsbBus,
             keyberon::keyboard::Keyboard<()>,
         >,
-        uart: rp2040_hal::pac::UART0,
+        #[lock_free]
+        matrix: Matrix<DynPin, DynPin, 17, 1>,
         layout: Layout<40, 1, 8, CustomActions>,
+        is_right: bool,
+        watchdog: hal::watchdog::Watchdog,
     }
 
     #[local]
     struct Local {
-        watchdog: hal::watchdog::Watchdog,
-        chording: Chording<4>,
-        matrix: Matrix<DynPin, DynPin, 17, 1>,
-        debouncer: Debouncer<[[bool; 17]; 1]>,
         alarm: hal::timer::Alarm0,
+        chording: Chording<4>,
+        debouncer: Debouncer<[[bool; 17]; 1]>,
+        led: Pin<bank0::Gpio25, hal::gpio::PushPullOutput>,
         transform: fn(layout::Event) -> layout::Event,
-        is_right: bool,
+        uart_r: Reader<
+            UART0,
+            (
+                Pin<bank0::Gpio16, Function<Uart>>,
+                Pin<bank0::Gpio17, Function<Uart>>,
+            ),
+        >,
+        uart_w: Writer<
+            UART0,
+            (
+                Pin<bank0::Gpio16, Function<Uart>>,
+                Pin<bank0::Gpio17, Function<Uart>>,
+            ),
+        >,
     }
 
     #[init]
@@ -281,16 +310,6 @@ mod app {
             }
         };
 
-        // Enable UART0
-        resets.reset.modify(|_, w| w.uart0().clear_bit());
-        while resets.reset_done.read().uart0().bit_is_clear() {}
-        let uart = c.device.UART0;
-        uart.uartibrd.write(|w| unsafe { w.bits(0b0100_0011) });
-        uart.uartfbrd.write(|w| unsafe { w.bits(0b0011_0100) });
-        uart.uartlcr_h.write(|w| unsafe { w.bits(0b0110_0000) });
-        uart.uartcr.write(|w| unsafe { w.bits(0b11_0000_0001) });
-        uart.uartimsc.write(|w| w.rxim().set_bit());
-
         let matrix: Matrix<DynPin, DynPin, 17, 1> = Matrix::new(
             [
                 gpio2.into_pull_up_input().into(),
@@ -322,16 +341,24 @@ mod app {
 
         let mut timer = hal::Timer::new(c.device.TIMER, &mut resets);
         let mut alarm = timer.alarm_0().unwrap();
-        let _ = alarm.schedule(SCAN_TIME_US.microseconds());
-        alarm.enable_interrupt();
 
         // TRS cable only supports one direction of communication
         if is_right {
-            let _rx_pin = pins.gpio17.into_mode::<hal::gpio::FunctionUart>();
-            led.set_high().unwrap();
+            // led.set_high().unwrap();
         } else {
-            let _tx_pin = pins.gpio16.into_mode::<hal::gpio::FunctionUart>();
+            led.set_low().unwrap();
         }
+        let _ = alarm.schedule(SCAN_INTERVAL);
+        alarm.enable_interrupt();
+        let tx_pin = pins.gpio16.into_mode::<hal::gpio::FunctionUart>();
+        let rx_pin = pins.gpio17.into_mode::<hal::gpio::FunctionUart>();
+        let uart = UartPeripheral::new(c.device.UART0, (tx_pin, rx_pin), &mut resets)
+            .enable(
+                UartConfig::new(460800.Hz(), DataBits::Eight, None, StopBits::One),
+                clocks.peripheral_clock.freq(),
+            )
+            .unwrap();
+        let (uart_r, uart_w) = uart.split();
 
         let usb_bus = UsbBusAllocator::new(UsbBus::new(
             c.device.USBCTRL_REGS,
@@ -346,28 +373,69 @@ mod app {
         let usb_class = keyberon::new_class(unsafe { USB_BUS.as_ref().unwrap() }, ());
         let usb_dev = keyberon::new_device(unsafe { USB_BUS.as_ref().unwrap() });
 
-        // Start watchdog and feed it with the lowest priority task at 1000hz
-        watchdog.start(10_000.microseconds());
+        // Start watchdog and feed it in timer for leftside and idle loop for right
+        // watchdog.start(WATCHDOG_INTERVAL);
+
+        rtt_init_print!();
+        rprintln!("Finishing Setup");
 
         (
             Shared {
                 usb_dev,
                 usb_class,
-                uart,
+                matrix,
                 layout,
+                is_right,
+                watchdog,
             },
             Local {
                 alarm,
                 chording,
-                watchdog,
-                matrix,
                 debouncer,
+                led,
                 transform,
-                is_right,
+                uart_r,
+                uart_w,
             },
             init::Monotonics(),
         )
     }
+
+    // #[idle(
+    //     shared = [&is_right, watchdog],
+    //     local = [uart_r, led, debouncer, chording])]
+    // fn idle(mut c: idle::Context) -> ! {
+    //     let uart = c.local.uart_r;
+    //     '_outter: loop {
+    //         if *c.shared.is_right {
+    //             c.shared.watchdog.lock(|w| w.feed());
+    //             let mut buffer: [u8; 5] = [77; 5];
+    //             // let mut byte: [u8; 1] = [0];
+    //             let mut offset = 0;
+    //             let mut found_last_byte = false;
+
+    //             while offset != buffer.len() || found_last_byte {
+    //                 offset += match uart.read_raw(&mut buffer[offset..]) {
+    //                     Ok(bytes_read) => bytes_read,
+    //                     Err(e) => continue,
+    //                 };
+    //                 if let Some(last_byte_pos) =
+    //                     buffer.into_iter().position(|x| (x & 0b1000_0000) > 0)
+    //                 {
+    //                     found_last_byte = true;
+    //                     // rprintln!("{:?} offset: {:?}", buffer, offset);
+    //                     c.local.led.toggle().unwrap();
+    //                     if last_byte_pos >= 2 {
+    //                         let rec_buf: &[u8] = &buffer[last_byte_pos - 2..last_byte_pos + 1];
+    //                         // The buffer has a full packet
+    //                         rprintln!("rec_buf: {:?}", rec_buf);
+    //                         break;
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
 
     #[task(binds = USBCTRL_IRQ, priority = 3, shared = [usb_dev, usb_class])]
     fn usb_rx(c: usb_rx::Context) {
@@ -382,122 +450,76 @@ mod app {
         });
     }
 
-    #[task(priority = 2, capacity = 8, shared = [usb_dev, usb_class, layout])]
-    fn handle_event(mut c: handle_event::Context, event: Option<layout::Event>) {
-        match event {
-            // TODO: Support Uf2 for the side not performing USB HID
-            // The right side only passes None here and buffers the keys
-            // for USB to send out when polled by the host
-            None => match c.shared.layout.lock(|l| l.tick()) {
-                layout::CustomEvent::Press(event) => match event {
-                    CustomActions::Uf2 => {
-                        hal::rom_data::reset_to_usb_boot(0, 0);
-                    }
-                    CustomActions::Reset => {
-                        cortex_m::peripheral::SCB::sys_reset();
-                    }
-                },
-                _ => (),
-            },
-            Some(e) => {
-                c.shared.layout.lock(|l| l.event(e));
-                return;
-            }
-        };
-        let report: key_code::KbHidReport = c.shared.layout.lock(|l| l.keycodes().collect());
-        if !c
-            .shared
-            .usb_class
-            .lock(|k| k.device_mut().set_keyboard_report(report.clone()))
-        {
-            return;
-        }
-        if c.shared.usb_dev.lock(|d| d.state()) != UsbDeviceState::Configured {
-            return;
-        }
-        while let Ok(0) = c.shared.usb_class.lock(|k| k.write(report.as_bytes())) {}
-    }
-
     #[task(
-        binds = TIMER_IRQ_0,
+        capacity = 1,
         priority = 1,
-        shared = [uart],
-        local = [matrix, debouncer, chording, watchdog, alarm, transform, is_right],
+        shared = [&is_right, watchdog, matrix],
+        local = [led, uart_r, debouncer],
     )]
-    fn scan_timer_irq(mut c: scan_timer_irq::Context) {
-        let alarm = c.local.alarm;
-        alarm.clear_interrupt();
-        let _ = alarm.schedule(SCAN_TIME_US.microseconds());
+    fn poll_uart(mut c: poll_uart::Context) {
+        let uart = c.local.uart_r;
+        '_outter: loop {
+            if *c.shared.is_right {
+                c.shared.watchdog.lock(|w| w.feed());
+                let mut buffer: [u8; 5] = [77; 5];
+                // let mut byte: [u8; 1] = [0];
+                let mut offset = 0;
+                let mut found_last_byte = false;
 
-        c.local.watchdog.feed();
-        let keys_pressed = c.local.matrix.get().unwrap();
-        let deb_events = c
-            .local
-            .debouncer
-            .events(keys_pressed)
-            .map(c.local.transform);
-        // TODO: right now chords cannot only be exclusively on one side
-        let events = c.local.chording.tick(deb_events.collect()).into_iter();
-
-        // TODO: With a TRS cable, we can only have one device support USB
-        if *c.local.is_right {
-            for event in events {
-                handle_event::spawn(Some(event)).unwrap();
-            }
-            handle_event::spawn(None).unwrap();
-        } else {
-            // coordinate and press/release is encoded in a single byte
-            // the first 6 bits are the coordinate and therefore cannot go past 63
-            // The last bit is to signify if it is the last byte to be sent, but
-            // this is not currently used as serial rx is the highest priority
-            // end? press=1/release=0 key_number
-            //   7         6            543210
-            let mut es: [Option<layout::Event>; 16] = [None; 16];
-            for (i, e) in events.enumerate() {
-                es[i] = Some(e);
-            }
-            let stop_index = es.iter().position(|&v| v == None).unwrap();
-            for i in 0..(stop_index + 1) {
-                let mut byte: u8;
-                if let Some(ev) = es[i] {
-                    if ev.coord().1 <= 0b0011_1111 {
-                        byte = ev.coord().1;
-                    } else {
-                        byte = 0b0011_1111;
+                while offset != buffer.len() || found_last_byte {
+                    offset += match uart.read_raw(&mut buffer[offset..]) {
+                        Ok(bytes_read) => bytes_read,
+                        Err(_e) => continue,
+                    };
+                    if let Some(last_byte_pos) =
+                        buffer.into_iter().position(|x| (x & 0b1000_0000) > 0)
+                    {
+                        found_last_byte = true;
+                        // rprintln!("{:?} offset: {:?}", buffer, offset);
+                        c.local.led.toggle().unwrap();
+                        if last_byte_pos >= 2 {
+                            let rec_buf: &[u8] = &buffer[last_byte_pos - 2..last_byte_pos + 1];
+                            // The buffer has a full packet
+                            rprintln!("rec_buf: {:?}", rec_buf);
+            // let keys_pressed = c.shared.matrix.get().unwrap()[0];
+                            break;
+                        }
                     }
-                    byte |= (ev.is_press() as u8) << 6;
-                    if i == stop_index + 1 {
-                        byte |= 0b1000_0000;
-                    }
-                    // Watchdog will catch any possibility for an infinite loop
-                    while c.shared.uart.lock(|u| u.uartfr.read().txff().bit_is_set()) {}
-                    c.shared
-                        .uart
-                        .lock(|u| u.uartdr.write(|w| unsafe { w.data().bits(byte) }));
                 }
             }
         }
     }
 
-    #[task(binds = UART0_IRQ, priority = 4, shared = [uart])]
-    fn rx(mut c: rx::Context) {
-        // RX FIFO is disabled so we just check that the byte received is valid
-        // and then we read it. If a bad byte is received, it is possible that the
-        // receiving side will never read. TODO: fix this
-        if c.shared.uart.lock(|u| {
-            u.uartmis.read().rxmis().bit_is_set()
-                && u.uartfr.read().rxfe().bit_is_clear()
-                && u.uartdr.read().oe().bit_is_clear()
-                && u.uartdr.read().be().bit_is_clear()
-                && u.uartdr.read().pe().bit_is_clear()
-                && u.uartdr.read().fe().bit_is_clear()
-        }) {
-            let d: u8 = c.shared.uart.lock(|u| u.uartdr.read().data().bits());
-            if (d & 0b01000000) > 0 {
-                handle_event::spawn(Some(layout::Event::Press(0, d & 0b0011_1111))).unwrap();
-            } else {
-                handle_event::spawn(Some(layout::Event::Release(0, d & 0b0011_1111))).unwrap();
+    #[task(
+        binds = TIMER_IRQ_0,
+        priority = 1,
+        shared = [&is_right, watchdog, matrix],
+        local = [alarm, uart_w],
+    )]
+    fn scan_timer_irq(mut c: scan_timer_irq::Context) {
+        let alarm = c.local.alarm;
+        alarm.clear_interrupt();
+        let _ = alarm.schedule(SCAN_INTERVAL);
+
+        c.shared.watchdog.lock(|w| w.feed());
+
+        if *c.shared.is_right {
+            alarm.disable_interrupt();
+            // this should spawn and then loop forever
+            if poll_uart::spawn().is_err() {
+                alarm.disable_interrupt();
             }
+        } else {
+            let keys_pressed = c.shared.matrix.get().unwrap()[0];
+            // Each key on the left side is represented by one bit
+            // the MSB of each byte is always 0, except for the last byte
+            //                          x            x            1
+            let mut key_bytes: [u8; COMS_NUM_BYTES] = [0b0000_0000, 0b0000_0000, 0b1000_0000];
+            for x in 0..keys_pressed.len() {
+                key_bytes[x / 7] |= ((keys_pressed[x] == true) as u8) << (x % 7);
+            }
+
+            c.local.uart_w.write_full_blocking(&key_bytes);
         }
     }
 }

@@ -1,0 +1,35 @@
+[default.probe]
+# rp picotool
+usb_vid = "2e8a"
+usb_pid = "000c"
+protocol = "Swd"
+
+[default.flashing]
+enabled = true
+
+[default.reset]
+# Whether or not the target should be reset.
+# When flashing is enabled as well, the target will be reset after flashing.
+enabled = true
+# Whether or not the target should be halted after reset.
+halt_afterwards = false
+
+[default.general]
+chip = "RP2040"
+#   "OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"
+log_level = "WARN"
+
+[default.rtt]
+# Whether or not an RTTUI should be opened after flashing.
+enabled = true
+# The duration in ms for which the logger should retry to attach to RTT.
+timeout = 3000
+show_timestamps = true
+log_enabled = true
+log_path = "./logs"
+
+[default.gdb]
+# Whether or not a GDB server should be opened after flashing.
+enabled = false
+# The connection string in host:port format wher the GDB server will open a socket.
+gdb_connection_string = "127.0.0.1:1337"
