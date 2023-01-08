@@ -9,7 +9,6 @@ mod app {
     use crate::layout::CustomActions;
     use embedded_hal::digital::v2::{InputPin, OutputPin, ToggleableOutputPin};
     use fugit::{MicrosDurationU32, RateExtU32};
-    use keyberon::action::{k, l, Action, HoldTapAction, HoldTapConfig};
     use keyberon::chording::Chording;
     use keyberon::debounce::Debouncer;
     use keyberon::key_code::KbHidReport;
@@ -56,9 +55,9 @@ mod app {
     #[local]
     struct Local {
         alarm: hal::timer::Alarm0,
-        chording: Chording<4>,
+        chording: Chording<6>,
         debouncer: Debouncer<[[bool; 40]; 1]>,
-        layout: Layout<40, 1, 1, CustomActions>,
+        layout: Layout<40, 1, 5, CustomActions>,
         led: Pin<bank0::Gpio25, hal::gpio::PushPullOutput>,
         uart_r: Reader<
             UART0,
