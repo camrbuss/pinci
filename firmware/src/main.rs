@@ -2,18 +2,17 @@
 #![no_main]
 
 use panic_halt as _;
+mod layout;
 
-#[rtic::app(device = rp_pico::hal::pac, peripherals = true, dispatchers = [PIO0_IRQ_0])]
+#[rtic::app(device = rp_pico::hal::pac, peripherals = true, dispatchers = [PIO0_IRQ_0, PIO1_IRQ_0])]
 mod app {
-    use core::sync::atomic::{AtomicUsize, Ordering};
-    use cortex_m::prelude::_embedded_hal_watchdog_Watchdog;
-    use cortex_m::prelude::_embedded_hal_watchdog_WatchdogEnable;
+    use crate::layout::CustomActions;
     use embedded_hal::digital::v2::{InputPin, OutputPin, ToggleableOutputPin};
     use fugit::{MicrosDurationU32, RateExtU32};
     use keyberon::action::{k, l, Action, HoldTapAction, HoldTapConfig};
-    use keyberon::chording::{ChordDef, Chording};
+    use keyberon::chording::Chording;
     use keyberon::debounce::Debouncer;
-    use keyberon::key_code::{self, KeyCode::*};
+    use keyberon::key_code::KbHidReport;
     use keyberon::layout::{self, Layout};
     use keyberon::matrix::Matrix;
     use rp_pico::{
@@ -33,166 +32,13 @@ mod app {
     };
     use rtt_target::{rprintln, rtt_init_print};
     use usb_device::class_prelude::*;
-    use usb_device::device::UsbDeviceState;
 
-    const SCAN_INTERVAL: MicrosDurationU32 = MicrosDurationU32::millis(1000);
-    const WATCHDOG_INTERVAL: MicrosDurationU32 = MicrosDurationU32::millis(100000);
+    // const SCAN_INTERVAL: MicrosDurationU32 = MicrosDurationU32::millis(1000);
+    const SCAN_INTERVAL: MicrosDurationU32 = MicrosDurationU32::millis(1);
 
     const COMS_NUM_BYTES: usize = 3;
 
     static mut USB_BUS: Option<usb_device::bus::UsbBusAllocator<rp2040_hal::usb::UsbBus>> = None;
-
-    #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-    pub enum CustomActions {
-        Uf2,
-        Reset,
-    }
-    const UF2: Action<CustomActions> = Action::Custom(CustomActions::Uf2);
-    const RESET: Action<CustomActions> = Action::Custom(CustomActions::Reset);
-
-    const QW_ESC: ChordDef = ((0, 37), &[(0, 0), (0, 1)]);
-    const JU_ESC: ChordDef = ((0, 37), &[(0, 16), (0, 6)]);
-    const KI_TAB: ChordDef = ((0, 39), &[(0, 17), (0, 7)]);
-    const LO_ENTER: ChordDef = ((0, 38), &[(0, 18), (0, 8)]);
-    const CHORDS: [ChordDef; 4] = [QW_ESC, JU_ESC, KI_TAB, LO_ENTER];
-
-    const A_LSHIFT: Action<CustomActions> = Action::HoldTap(&HoldTapAction {
-        timeout: 200,
-        hold: k(LShift),
-        tap: k(A),
-        config: HoldTapConfig::PermissiveHold,
-        tap_hold_interval: 0,
-    });
-    const L5_S: Action<CustomActions> = Action::HoldTap(&HoldTapAction {
-        timeout: 200,
-        hold: l(5),
-        tap: k(S),
-        config: HoldTapConfig::Default,
-        tap_hold_interval: 0,
-    });
-    const D_LALT: Action<CustomActions> = Action::HoldTap(&HoldTapAction {
-        timeout: 200,
-        hold: k(LAlt),
-        tap: k(D),
-        config: HoldTapConfig::Default,
-        tap_hold_interval: 0,
-    });
-    const L2_F: Action<CustomActions> = Action::HoldTap(&HoldTapAction {
-        timeout: 200,
-        hold: l(2),
-        tap: k(F),
-        config: HoldTapConfig::Default,
-        tap_hold_interval: 0,
-    });
-    const DOT_RALT: Action<CustomActions> = Action::HoldTap(&HoldTapAction {
-        timeout: 200,
-        hold: k(RAlt),
-        tap: k(Dot),
-        config: HoldTapConfig::Default,
-        tap_hold_interval: 0,
-    });
-    const X_LALT: Action<CustomActions> = Action::HoldTap(&HoldTapAction {
-        timeout: 200,
-        hold: k(LAlt),
-        tap: k(X),
-        config: HoldTapConfig::Default,
-        tap_hold_interval: 0,
-    });
-    const SLASH_RCTRL: Action<CustomActions> = Action::HoldTap(&HoldTapAction {
-        timeout: 200,
-        hold: k(RCtrl),
-        tap: k(Slash),
-        config: HoldTapConfig::Default,
-        tap_hold_interval: 0,
-    });
-    const Z_LCTRL: Action<CustomActions> = Action::HoldTap(&HoldTapAction {
-        timeout: 200,
-        hold: k(LCtrl),
-        tap: k(Z),
-        config: HoldTapConfig::Default,
-        tap_hold_interval: 0,
-    });
-    const L4_C: Action<CustomActions> = Action::HoldTap(&HoldTapAction {
-        timeout: 200,
-        hold: l(4),
-        tap: k(C),
-        config: HoldTapConfig::Default,
-        tap_hold_interval: 0,
-    });
-    const SEMI_RSHIFT: Action<CustomActions> = Action::HoldTap(&HoldTapAction {
-        timeout: 200,
-        hold: k(RShift),
-        tap: k(SColon),
-        config: HoldTapConfig::PermissiveHold,
-        tap_hold_interval: 0,
-    });
-    const L7_SPACE: Action<CustomActions> = Action::HoldTap(&HoldTapAction {
-        timeout: 200,
-        hold: l(7),
-        tap: k(Space),
-        config: HoldTapConfig::Default,
-        tap_hold_interval: 0,
-    });
-    const L4_COMMA: Action<CustomActions> = Action::HoldTap(&HoldTapAction {
-        timeout: 200,
-        hold: l(4),
-        tap: k(Comma),
-        config: HoldTapConfig::Default,
-        tap_hold_interval: 0,
-    });
-
-    #[rustfmt::skip]
-    pub static LAYERS: keyberon::layout::Layers<40, 1, 8, CustomActions> = keyberon::layout::layout! {
-    {[ // 0
-        Q          W        E        R      T      Y          U   I          O          P
-        {A_LSHIFT} {L5_S}   {D_LALT} {L2_F} G      H          J   K          L          {SEMI_RSHIFT}
-        {Z_LCTRL}  {X_LALT} {L4_C}   V      B      N          M   {L4_COMMA} {DOT_RALT} {SLASH_RCTRL}
-        t          t        t        (3)    BSpace {L7_SPACE} Tab Escape     Enter      Tab
-    ]}
-    {[ // 1
-        t t t t t t t t t t
-        t t t t t t t t t t
-        t t t t t t t t t t
-        t t t t t t t t t t
-    ]}
-    {[ // 2
-        t t t t t * 7 8 9 +
-        t t t t t / 4 5 6 -
-        t t t t t . 1 2 3 .
-        t t t t t 0 0 t t t
-    ]}
-    {[ // 3
-        t 7 8 9 t t t t t t
-        t 4 5 6 t t t t t t
-        0 1 2 3 t t t t t t
-        t t t t t t t t t t
-    ]}
-    {[ // 4
-        !   @   #   $   % t ~   |    '`' +
-        '{' '}' '(' ')' t = '_' -    '"' Quote
-        '[' ']' ^   &   * t /   '\\' t   t
-        t   t   t   t   t t t   t    t   t
-    ]}
-    {[ // 5
-        t t t      t t t    t    PgUp   t     t
-        t t Delete t t Left Down Up     Right Enter
-        t t t      t t t    Home PgDown End   t
-        t t t      t t t    t    t      t     t
-    ]}
-    {[ // 6
-        {RESET} {UF2} t t t t t t t MediaSleep
-        t       t     t t t t t t t t
-        t       t     t t t t t t t t
-        t       t     t t t t t t t t
-    ]}
-    {[ // 7
-        t t t t t      MediaNextSong MediaPlayPause MediaVolDown MediaVolUp PScreen
-        t t t t t      t             Escape         Tab          Enter      Enter
-        t t t t t      t             t              t            t          Delete
-        t t t t Delete t             t              t            t          t
-    ]}
-
-};
 
     #[shared]
     struct Shared {
@@ -204,18 +50,16 @@ mod app {
         >,
         #[lock_free]
         matrix: Matrix<DynPin, DynPin, 17, 1>,
-        layout: Layout<40, 1, 8, CustomActions>,
         is_right: bool,
-        watchdog: hal::watchdog::Watchdog,
     }
 
     #[local]
     struct Local {
         alarm: hal::timer::Alarm0,
         chording: Chording<4>,
-        debouncer: Debouncer<[[bool; 17]; 1]>,
+        debouncer: Debouncer<[[bool; 40]; 1]>,
+        layout: Layout<40, 1, 1, CustomActions>,
         led: Pin<bank0::Gpio25, hal::gpio::PushPullOutput>,
-        transform: fn(layout::Event) -> layout::Event,
         uart_r: Reader<
             UART0,
             (
@@ -291,24 +135,7 @@ mod app {
             cortex_m::asm::nop();
         }
 
-        // Use a transform to get correct layout from right and left side
         let is_right = side.is_high().unwrap();
-        let transform: fn(layout::Event) -> layout::Event = if is_right {
-            |e| {
-                e.transform(|i: u8, j: u8| -> (u8, u8) {
-                    // 0 -> 5,  5 -> 15, 10 -> 25
-                    let x = ((j / 5) * 10) + (j % 5) + 5;
-                    (i, x)
-                })
-            }
-        } else {
-            |e| {
-                e.transform(|i: u8, j: u8| -> (u8, u8) {
-                    let x = ((j / 5) * 10) + 4 - (j % 5);
-                    (i, x)
-                })
-            }
-        };
 
         let matrix: Matrix<DynPin, DynPin, 17, 1> = Matrix::new(
             [
@@ -334,10 +161,10 @@ mod app {
         )
         .unwrap();
 
-        let layout = Layout::new(&LAYERS);
-        let debouncer = Debouncer::new([[false; 17]; 1], [[false; 17]; 1], 20);
+        let layout = Layout::new(&crate::layout::LAYERS);
+        let debouncer = Debouncer::new([[false; 40]; 1], [[false; 40]; 1], 20);
 
-        let chording = Chording::new(&CHORDS);
+        let chording = Chording::new(&crate::layout::CHORDS);
 
         let mut timer = hal::Timer::new(c.device.TIMER, &mut resets);
         let mut alarm = timer.alarm_0().unwrap();
@@ -373,9 +200,6 @@ mod app {
         let usb_class = keyberon::new_class(unsafe { USB_BUS.as_ref().unwrap() }, ());
         let usb_dev = keyberon::new_device(unsafe { USB_BUS.as_ref().unwrap() });
 
-        // Start watchdog and feed it in timer for leftside and idle loop for right
-        // watchdog.start(WATCHDOG_INTERVAL);
-
         rtt_init_print!();
         rprintln!("Finishing Setup");
 
@@ -384,58 +208,20 @@ mod app {
                 usb_dev,
                 usb_class,
                 matrix,
-                layout,
                 is_right,
-                watchdog,
             },
             Local {
                 alarm,
                 chording,
                 debouncer,
+                layout,
                 led,
-                transform,
                 uart_r,
                 uart_w,
             },
             init::Monotonics(),
         )
     }
-
-    // #[idle(
-    //     shared = [&is_right, watchdog],
-    //     local = [uart_r, led, debouncer, chording])]
-    // fn idle(mut c: idle::Context) -> ! {
-    //     let uart = c.local.uart_r;
-    //     '_outter: loop {
-    //         if *c.shared.is_right {
-    //             c.shared.watchdog.lock(|w| w.feed());
-    //             let mut buffer: [u8; 5] = [77; 5];
-    //             // let mut byte: [u8; 1] = [0];
-    //             let mut offset = 0;
-    //             let mut found_last_byte = false;
-
-    //             while offset != buffer.len() || found_last_byte {
-    //                 offset += match uart.read_raw(&mut buffer[offset..]) {
-    //                     Ok(bytes_read) => bytes_read,
-    //                     Err(e) => continue,
-    //                 };
-    //                 if let Some(last_byte_pos) =
-    //                     buffer.into_iter().position(|x| (x & 0b1000_0000) > 0)
-    //                 {
-    //                     found_last_byte = true;
-    //                     // rprintln!("{:?} offset: {:?}", buffer, offset);
-    //                     c.local.led.toggle().unwrap();
-    //                     if last_byte_pos >= 2 {
-    //                         let rec_buf: &[u8] = &buffer[last_byte_pos - 2..last_byte_pos + 1];
-    //                         // The buffer has a full packet
-    //                         rprintln!("rec_buf: {:?}", rec_buf);
-    //                         break;
-    //                     }
-    //                 }
-    //             }
-    //         }
-    //     }
-    // }
 
     #[task(binds = USBCTRL_IRQ, priority = 3, shared = [usb_dev, usb_class])]
     fn usb_rx(c: usb_rx::Context) {
@@ -450,23 +236,50 @@ mod app {
         });
     }
 
+    #[task(priority = 2, capacity = 1, shared = [usb_class], local = [chording, debouncer, layout])]
+    fn handle_event(c: handle_event::Context, keys_pressed: [[bool; 40]; 1]) {
+        // for event in c
+        //     .local
+        //     .chording
+        //     .tick(c.local.debouncer.events(keys_pressed).collect())
+        for event in c.local.debouncer.events(keys_pressed) {
+            // rprintln!("event: {:?}", event);
+            rprintln!("e{}", event.coord().1);
+            c.local.layout.event(event);
+        }
+        match c.local.layout.tick() {
+            layout::CustomEvent::Press(event) => match event {
+                CustomActions::Uf2 => hal::rom_data::reset_to_usb_boot(0, 0),
+                CustomActions::Reset => cortex_m::peripheral::SCB::sys_reset(),
+            },
+            _ => (),
+        }
+        let report: KbHidReport = c.local.layout.keycodes().collect();
+        let mut usb_class = c.shared.usb_class;
+        if usb_class.lock(|k| k.device_mut().set_keyboard_report(report.clone())) {
+            rprintln!("{:?}", report.as_bytes());
+            while let Ok(0) = usb_class.lock(|k| k.write(report.as_bytes())) {}
+            rprintln!("b");
+        }
+    }
+
     #[task(
         capacity = 1,
         priority = 1,
-        shared = [&is_right, watchdog, matrix],
-        local = [led, uart_r, debouncer],
+        shared = [&is_right, matrix, usb_dev, usb_class],
+        local = [led, uart_r],
     )]
-    fn poll_uart(mut c: poll_uart::Context) {
+    fn poll_uart(c: poll_uart::Context) {
         let uart = c.local.uart_r;
+        // let mut usb_class = c.shared.usb_class;
+        let is_right: bool = *c.shared.is_right;
         '_outter: loop {
-            if *c.shared.is_right {
-                c.shared.watchdog.lock(|w| w.feed());
-                let mut buffer: [u8; 5] = [77; 5];
+            if is_right {
+                let mut buffer: [u8; 3] = [77; 3];
                 // let mut byte: [u8; 1] = [0];
                 let mut offset = 0;
-                let mut found_last_byte = false;
 
-                while offset != buffer.len() || found_last_byte {
+                while offset != buffer.len() {
                     offset += match uart.read_raw(&mut buffer[offset..]) {
                         Ok(bytes_read) => bytes_read,
                         Err(_e) => continue,
@@ -474,16 +287,46 @@ mod app {
                     if let Some(last_byte_pos) =
                         buffer.into_iter().position(|x| (x & 0b1000_0000) > 0)
                     {
-                        found_last_byte = true;
-                        // rprintln!("{:?} offset: {:?}", buffer, offset);
+                        rprintln!("{:?}", buffer);
                         c.local.led.toggle().unwrap();
                         if last_byte_pos >= 2 {
                             let rec_buf: &[u8] = &buffer[last_byte_pos - 2..last_byte_pos + 1];
+                            // rprintln!("{:?}", rec_buf);
                             // The buffer has a full packet
-                            rprintln!("rec_buf: {:?}", rec_buf);
-            // let keys_pressed = c.shared.matrix.get().unwrap()[0];
-                            break;
+                            let kpou: [bool; 17] = [
+                                (rec_buf[0] & 0b0000_0001) != 0,
+                                (rec_buf[0] & 0b0000_0010) != 0,
+                                (rec_buf[0] & 0b0000_0100) != 0,
+                                (rec_buf[0] & 0b0000_1000) != 0,
+                                (rec_buf[0] & 0b0001_0000) != 0,
+                                (rec_buf[0] & 0b0010_0000) != 0,
+                                (rec_buf[0] & 0b0100_0000) != 0,
+                                (rec_buf[1] & 0b0000_0001) != 0,
+                                (rec_buf[1] & 0b0000_0010) != 0,
+                                (rec_buf[1] & 0b0000_0100) != 0,
+                                (rec_buf[1] & 0b0000_1000) != 0,
+                                (rec_buf[1] & 0b0001_0000) != 0,
+                                (rec_buf[1] & 0b0010_0000) != 0,
+                                (rec_buf[1] & 0b0100_0000) != 0,
+                                (rec_buf[2] & 0b0000_0001) != 0,
+                                (rec_buf[2] & 0b0000_0010) != 0,
+                                (rec_buf[2] & 0b0000_0100) != 0,
+                            ];
+                            let kptu = c.shared.matrix.get().unwrap()[0];
+
+                            #[rustfmt::skip]
+                            let keys_pressed: [[bool; 40]; 1] = [[
+                                kpou[4], kpou[3], kpou[2], kpou[1], kpou[0], kptu[0], kptu[1], kptu[2], kptu[3], kptu[4],
+                                kpou[9], kpou[8], kpou[7], kpou[6], kpou[5], kptu[5], kptu[6], kptu[7], kptu[8], kptu[9],
+                                kpou[14], kpou[13], kpou[12], kpou[11], kpou[10], kptu[10], kptu[11], kptu[12], kptu[13], kptu[14],
+                                false, false, false, kpou[16], kpou[15], kptu[15], kptu[16], false, false, false
+                            ]];
+
+                            if handle_event::spawn(keys_pressed).is_err() {
+                                rprintln!("f");
+                            }
                         }
+                        break;
                     }
                 }
             }
@@ -493,15 +336,13 @@ mod app {
     #[task(
         binds = TIMER_IRQ_0,
         priority = 1,
-        shared = [&is_right, watchdog, matrix],
+        shared = [&is_right, matrix],
         local = [alarm, uart_w],
     )]
-    fn scan_timer_irq(mut c: scan_timer_irq::Context) {
+    fn scan_timer_irq(c: scan_timer_irq::Context) {
         let alarm = c.local.alarm;
         alarm.clear_interrupt();
         let _ = alarm.schedule(SCAN_INTERVAL);
-
-        c.shared.watchdog.lock(|w| w.feed());
 
         if *c.shared.is_right {
             alarm.disable_interrupt();
